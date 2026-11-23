@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#102D5A">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
 <title>Fares Print App</title>
 <style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -149,9 +152,12 @@ header h1{text-align:center}
 .cbar .ci svg{width:30px;height:30px;stroke:#fff;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .cbar .cn{position:absolute;top:-8px;right:-6px;background:var(--gold);color:var(--navy);border-radius:10px;min-width:20px;text-align:center;font-size:12px;font-weight:700;padding:1px 4px}
 .cbar .btn{border-bottom-color:var(--gold)}
+#licbar{background:#FFF4D6;color:#7a5500;text-align:center;font-size:13px;padding:6px 10px;border-bottom:1px solid #e8d49a}#licbar.warn{background:#FDECEA;color:#C0392B;border-bottom-color:#f1b8b0}
+.lic-st{display:inline-block;border-radius:8px;padding:0 8px;font-size:13px;font-weight:700;background:#E8EEF7;color:#102D5A}.lic-st.expired,.lic-st.suspended{background:#FDECEA;color:#C0392B}.lic-st.active{background:#E6F4EC;color:#1B7F54}
 </style>
 </head>
 <body>
+<div id="licbar" style="display:none"></div>
 <header><button id="backBtn" style="display:none" data-act="back">رجوع ›</button><h1 id="title">Fares Print App</h1><button data-act="home">الرئيسية</button></header>
 <main id="app"><div class="empty">جاري التحميل…</div></main>
 <nav id="bn"></nav>
@@ -204,7 +210,7 @@ header h1{text-align:center}
     try { r = await fetch(CFG.url + '/rest/v1/' + path, { method: method, headers: h, body: body === undefined ? undefined : JSON.stringify(body) }); }
     catch (e) { throw mkErr('تعذر الاتصال بالإنترنت', 'net'); }
     var txt = await r.text(), j = null; try { j = txt ? JSON.parse(txt) : null; } catch (e) { j = null; }
-    if (!r.ok) throw friendly(j && (j.message || j.details || j.hint) ? (j.message || '') + ' ' + (j.details || '') : txt, r.status);
+    if (!r.ok) { var fe = friendly(j && (j.message || j.details || j.hint) ? (j.message || '') + ' ' + (j.details || '') : txt, r.status); if (fe.code === 'auth' && g.FP_onDenied && String(path).indexOf('rpc/my_license') < 0) { try { g.FP_onDenied(); } catch (e2) {} } throw fe; }
     return j;
   }
   async function fetchRows(coll, o) {
@@ -307,6 +313,7 @@ header h1{text-align:center}
     signIn: async function (email, pw) { setSess(await authCall('password', { email: email, password: pw })); sess.email = email; saveSess(); },
     signOut: function () { sess = null; saveSess(); cache = {}; loadedC = {}; },
     exportAll: async function () { return rest('POST', 'rpc/export_all', {}); },
+    rpc: function (name, args) { return rest('POST', 'rpc/' + name, args || {}); },
     importAll: async function (pkg, progress) {
       var items = [];
       (pkg.catalog || []).forEach(function (x) { items.push({ op: 'set', coll: x.coll, id: x.id, data: x.data }); });
@@ -472,9 +479,11 @@ function go(name, param, tab) { stack.push(V); V = { name: name, param: param, t
 function back() { V = stack.pop() || { name: 'home' }; E = null; render(); }
 function titleFor() {
   var T = { backup: 'النسخ الاحتياطي والحساب', home: 'Fares Print App', books: 'إدارة الكتب', stages: 'المراحل الدراسية', subjects: 'المواد الدراسية', series: 'إدارة السلاسل', prices: 'إعدادات الأسعار', customers: 'العملاء', customer: 'حساب العميل', suppliers: 'الموردون', supplier: 'حساب المورد', sales: 'فواتير المبيعات', sale: 'فاتورة بيع', saleEdit: 'فاتورة بيع', purchases: 'فواتير المشتريات', purchase: 'فاتورة شراء', purchaseEdit: 'فاتورة شراء', inventory: 'إدارة المخزون', itemTypes: 'أنواع الأصناف', units: 'وحدات القياس', log: 'سجل العمليات' };
-  return T[V.name] || 'Fares Print App';
+  return T[V.name] || (V.name === 'licenses' ? 'التراخيص' : 'Fares Print App');
 }
+var blocked = false;
 function render() {
+  if (blocked) return;
   var app = $('#app');
   $('#title').textContent = titleFor();
   if (E && E.kind === 'sales' && V.name === 'saleEdit') $('#title').textContent = { pick: 'اختيار الكتب', cart: 'سلة الفاتورة', details: 'بيانات الفاتورة' }[E.step] || 'فاتورة بيع';
@@ -1260,14 +1269,92 @@ function showLogin(msg) {
   };
   $('#lg-go').onclick = go_; $('#lg-pw').onkeydown = function (e) { if (e.key === 'Enter') go_(); };
 }
-window.FP_onAuthLost = function () { showLogin('انتهت الجلسة. سجّل الدخول من جديد'); };
+window.FP_onAuthLost = function () { if (blocked) return; showLogin('انتهت الجلسة. سجّل الدخول من جديد'); };
+
+/* ---------- trial license (enforced on the server; this is only the display) ---------- */
+var LIC = null, licChecking = false, licTimer = null;
+var LSTATE = { trial: 'تجريبي', active: 'نشط', expired: 'منتهٍ', suspended: 'موقوف', none: 'غير مفعّل' };
+function dstr(iso) { if (!iso) return '—'; var d = new Date(iso); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+function daysLeft(lic) { if (!lic || !lic.expires_at) return null; var skew = lic.now ? Date.parse(lic.now) - Date.now() : 0; return Math.ceil((Date.parse(lic.expires_at) - (Date.now() + skew)) / 86400000); }
+function showBlocked(lic) {
+  blocked = true; started = false; E = null;
+  document.body.classList.remove('home'); document.body.classList.add('nonav');
+  $('#licbar').style.display = 'none'; $('#bn').innerHTML = ''; $('#bn').style.display = 'none';
+  var hb = document.querySelector('header [data-act=home]'); if (hb) hb.style.display = 'none'; $('#backBtn').style.display = 'none'; $('#title').textContent = 'Fares Print App';
+  lic = lic || {}; var st = lic.state || 'none';
+  var head = st === 'suspended' ? 'تم إيقاف الترخيص' : (st === 'none' ? 'الحساب غير مفعّل' : 'انتهت الفترة التجريبية');
+  var body = st === 'none' ? 'هذا الحساب غير مرتبط بأي مطبعة. تواصل مع مزوّد التطبيق.' : 'بياناتك وفواتيرك وكتبك وحساباتك محفوظة بالكامل ولم يُحذف منها شيء. للاستمرار في استخدام التطبيق تواصل مع مزوّد التطبيق لتمديد التجربة أو تفعيل الاشتراك.';
+  var contact = (window.FP_CONFIG && window.FP_CONFIG.contact) ? '<div class="b" style="margin-top:10px">للتواصل: <span class="num-l">' + esc(window.FP_CONFIG.contact) + '</span></div>' : '';
+  var dates = (lic.started_at ? '<div class="mut" style="margin-top:8px">بداية التجربة: <b>' + dstr(lic.started_at) + '</b> — نهايتها: <b>' + dstr(lic.expires_at) + '</b></div>' : '');
+  $('#app').innerHTML = '<div class="card" style="margin-top:24px;text-align:center"><div class="b" style="font-size:20px;color:var(--bad)">' + head + '</div><p style="margin:12px 0">' + body + '</p>' + dates + contact +
+    '<button class="btn gold" style="width:100%;margin-top:16px" onclick="location.reload()">إعادة المحاولة</button><button class="btn sec" style="width:100%;margin-top:8px" id="blk-out">تسجيل الخروج</button></div>';
+  $('#blk-out').onclick = function () { db.signOut(); location.reload(); };
+}
+function checkLicense() {
+  if (licChecking || blocked || !started) return; licChecking = true;
+  db.rpc('my_license').then(function (l) { if (l && l.allowed === false) showBlocked(l); else if (l) { LIC = l; renderLicBar(); } }).catch(function () {}).then(function () { licChecking = false; });
+}
+window.FP_onDenied = function () { checkLicense(); };
+function renderLicBar() {
+  var bar = $('#licbar'); if (!LIC || !(LIC.state === 'trial' || (LIC.state === 'active' && LIC.expires_at))) { bar.style.display = 'none'; return; }
+  var n = daysLeft(LIC); bar.className = n != null && n <= 2 ? 'warn' : '';
+  bar.textContent = (LIC.state === 'trial' ? 'نسخة تجريبية' : 'الاشتراك') + ': من ' + dstr(LIC.started_at) + ' إلى ' + dstr(LIC.expires_at) + (n != null ? ' (متبقي ' + Math.max(n, 0) + ' يوم)' : '');
+  bar.style.display = '';
+}
+function licCard() {
+  if (!LIC || LIC.state === 'unlimited') return '';
+  if (LIC.is_admin) return '<div class="card"><div class="b">الترخيص</div><div class="mut">حساب مدير: بدون قيود.</div></div>';
+  var n = daysLeft(LIC);
+  return '<div class="card"><div class="b">الترخيص</div><div class="mut">الحالة: <span class="lic-st ' + esc(LIC.state) + '">' + esc(LSTATE[LIC.state] || LIC.state) + '</span></div><div class="mut">بداية التجربة: <b>' + dstr(LIC.started_at) + '</b></div><div class="mut">نهاية التجربة: <b>' + dstr(LIC.expires_at) + '</b>' + (n != null ? ' (متبقي ' + Math.max(n, 0) + ' يوم)' : '') + '</div></div>';
+}
+var _bk = VIEWS.backup; VIEWS.backup = function () { return licCard() + _bk(); };
+
+/* manager panel (admin accounts only; the server rejects everyone else) */
+IC.licenses = '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3M14 9l2 2"/>';
+var LICROWS = [];
+VIEWS.licenses = function () { setTimeout(loadLics, 0); return '<div id="lic-list" class="empty">جاري التحميل…</div>'; };
+async function loadLics() {
+  try {
+    LICROWS = await db.rpc('admin_list_licenses') || [];
+    var box = $('#lic-list'); if (!box || V.name !== 'licenses') return;
+    box.className = '';
+    box.innerHTML = LICROWS.length ? LICROWS.map(function (x) {
+      return '<div class="card"><div class="row"><div class="sp"><div class="b">' + esc(x.customer || x.tenant_id) + '</div><div class="mut num-l">' + esc(x.email || 'لا يوجد حساب') + '</div></div><span class="lic-st ' + esc(x.state) + '">' + esc(LSTATE[x.state] || x.state) + '</span></div>' +
+        '<div class="mut" style="margin-top:6px">بداية التجربة: <b>' + (x.started_at ? dstr(x.started_at) : 'تبدأ عند أول دخول') + '</b></div><div class="mut">نهاية التجربة: <b>' + dstr(x.expires_at) + '</b> • المدة: ' + x.trial_days + ' أيام</div>' +
+        '<div class="row" style="margin-top:8px;flex-wrap:wrap"><button class="btn sm" data-act="licExtend" data-t="' + esc(x.tenant_id) + '">تمديد الفترة</button>' +
+        (x.state === 'suspended' ? '<button class="btn sec sm" data-act="licResume" data-t="' + esc(x.tenant_id) + '">إعادة التفعيل</button>' : '<button class="btn bad sm" data-act="licSuspend" data-t="' + esc(x.tenant_id) + '">إيقاف الترخيص</button>') + '</div></div>';
+    }).join('') : '<div class="empty">لا توجد تراخيص</div>';
+  } catch (e) { var b2 = $('#lic-list'); if (b2) b2.textContent = 'تعذر التحميل: ' + errText(e); }
+}
+ACT.licExtend = function (d) {
+  var t = d.t;
+  formModal({ title: 'تمديد الترخيص', fields: [{ k: 'days', label: 'عدد الأيام المضافة', num: true, value: '7' }],
+    ok: async function (v) { var n = pInt(v.days); if (!(n >= 1 && n <= 3650)) return 'اكتب عدد أيام من 1 إلى 3650'; await db.rpc('admin_extend', { p_tenant: t, p_days: n }); loadLics(); return null; } });
+};
+ACT.licSuspend = function (d) { var t = d.t; confirmModal('إيقاف الترخيص؟ لن يتمكن العميل من الدخول حتى تعيد التفعيل. بياناته لا تُحذف.', 'إيقاف', async function () { await db.rpc('admin_set_status', { p_tenant: t, p_status: 'suspended' }); await loadLics(); }); };
+ACT.licResume = function (d) { var t = d.t; confirmModal('إعادة تفعيل الترخيص؟ لو كانت مدته انتهت استخدم «تمديد الفترة» بعدها.', 'إعادة التفعيل', async function () { await db.rpc('admin_set_status', { p_tenant: t, p_status: 'trial' }); await loadLics(); }); };
 var started = false;
 function startApp() {
   if (started) return; started = true;
+  $('#app').innerHTML = '<div class="empty">جاري التحقق من الحساب…</div>';
+  db.rpc('my_license').then(function (lic) {
+    LIC = lic || { state: 'none', allowed: false };
+    if (!LIC.allowed) { showBlocked(LIC); return; }
+    if (LIC.is_admin && !QA.some(function (q) { return q[0] === 'licenses'; })) QA.push(['licenses', 'التراخيص']);
+    renderLicBar();
+    if (licTimer) clearInterval(licTimer); licTimer = setInterval(checkLicense, 300000);
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) checkLicense(); });
+    bootData();
+  }).catch(function (e) {
+    if (e && e.code === 'auth') { started = false; db.signOut(); showLogin('سجّل الدخول من جديد'); return; }
+    started = false; $('#app').innerHTML = '<div class="card" style="margin-top:24px;text-align:center"><div class="due">تعذر التحقق من الحساب: ' + esc(errText(e)) + '</div><button class="btn" style="margin-top:12px" onclick="location.reload()">إعادة المحاولة</button></div>';
+  });
+}
+function bootData() {
   $('#bn').style.display = ''; var hb = document.querySelector('header [data-act=home]'); if (hb) hb.style.display = '';
   $('#app').innerHTML = '<div class="empty">جاري التحميل…</div>';
   var timer = setTimeout(function () { if (!allLoaded()) $('#app').innerHTML = '<div class="empty">تعذر الوصول للبيانات بعد. تأكد من الاتصال بالإنترنت وانتظر قليلًا.</div>'; }, 15000);
-  var fail = function (e) { if (e && e.code === 'auth') { started = false; db.signOut(); showLogin('سجّل الدخول من جديد'); return; } $('#app').innerHTML = '<div class="empty">تعذر تحميل البيانات: ' + esc(errText(e)) + '</div>'; };
+  var fail = function (e) { if (blocked) return; if (e && e.code === 'auth') { started = false; db.signOut(); showLogin('سجّل الدخول من جديد'); return; } $('#app').innerHTML = '<div class="empty">تعذر تحميل البيانات: ' + esc(errText(e)) + '</div>'; };
   COLS.forEach(function (c) {
     db.collection(c).onSnapshot(function (snap) { S[c] = snap.docs.map(function (d) { return Object.assign({ id: d.id }, d.data()); }); loaded[c] = true; if (allLoaded()) clearTimeout(timer); refresh(); }, fail);
   });
@@ -1275,6 +1362,20 @@ function startApp() {
 }
 (function () { db = window.SupaDB; if (db.hasSession()) startApp(); else showLogin(); })();
 })();
+</script>
+<script>
+/* PWA: installable + always picks up the newest version from the same link */
+if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
+  window.addEventListener('load', function () {
+    var had = !!navigator.serviceWorker.controller, reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', function () { if (!had || reloaded) return; reloaded = true; location.reload(); });
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(function (reg) {
+      var chk = function () { try { reg.update(); } catch (e) {} };
+      document.addEventListener('visibilitychange', function () { if (!document.hidden) chk(); });
+      setInterval(chk, 15 * 60 * 1000);
+    }).catch(function () {});
+  });
+}
 </script>
 </body>
 </html>
