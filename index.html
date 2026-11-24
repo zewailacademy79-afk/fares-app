@@ -1307,7 +1307,8 @@ function licCard() {
   var n = daysLeft(LIC);
   return '<div class="card"><div class="b">الترخيص</div><div class="mut">الحالة: <span class="lic-st ' + esc(LIC.state) + '">' + esc(LSTATE[LIC.state] || LIC.state) + '</span></div><div class="mut">بداية التجربة: <b>' + dstr(LIC.started_at) + '</b></div><div class="mut">نهاية التجربة: <b>' + dstr(LIC.expires_at) + '</b>' + (n != null ? ' (متبقي ' + Math.max(n, 0) + ' يوم)' : '') + '</div></div>';
 }
-var _bk = VIEWS.backup; VIEWS.backup = function () { return licCard() + _bk(); };
+var APP_VERSION = '2026-11-24.1';
+var _bk = VIEWS.backup; VIEWS.backup = function () { return licCard() + _bk() + '<div class="mut" style="text-align:center;margin:8px 0">إصدار التطبيق: ' + APP_VERSION + '</div>'; };
 
 /* manager panel (admin accounts only; the server rejects everyone else) */
 IC.licenses = '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3M14 9l2 2"/>';
