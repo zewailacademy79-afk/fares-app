@@ -1307,7 +1307,9 @@ function licCard() {
   var n = daysLeft(LIC);
   return '<div class="card"><div class="b">الترخيص</div><div class="mut">الحالة: <span class="lic-st ' + esc(LIC.state) + '">' + esc(LSTATE[LIC.state] || LIC.state) + '</span></div><div class="mut">بداية التجربة: <b>' + dstr(LIC.started_at) + '</b></div><div class="mut">نهاية التجربة: <b>' + dstr(LIC.expires_at) + '</b>' + (n != null ? ' (متبقي ' + Math.max(n, 0) + ' يوم)' : '') + '</div></div>';
 }
-var APP_VERSION = '2026-11-24.1';
+var APP_VERSION = '2026-11-24.2';
+window.FP_VERSION = APP_VERSION;
+window.FP_BUSY = function () { return !!E || !!document.querySelector('.modalbg'); };
 var _bk = VIEWS.backup; VIEWS.backup = function () { return licCard() + _bk() + '<div class="mut" style="text-align:center;margin:8px 0">إصدار التطبيق: ' + APP_VERSION + '</div>'; };
 
 /* manager panel (admin accounts only; the server rejects everyone else) */
@@ -1370,6 +1372,15 @@ if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
   window.addEventListener('load', function () {
     var had = !!navigator.serviceWorker.controller, reloaded = false;
     navigator.serviceWorker.addEventListener('controllerchange', function () { if (!had || reloaded) return; reloaded = true; location.reload(); });
+    var chkVer = function () {
+      if (window.FP_BUSY && window.FP_BUSY()) return;
+      fetch(location.pathname, { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (t) {
+        var m = t.match(/var APP_VERSION = '([^']+)'/);
+        if (m && window.FP_VERSION && m[1] !== window.FP_VERSION && !(window.FP_BUSY && window.FP_BUSY())) location.reload();
+      }).catch(function () {});
+    };
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) chkVer(); });
+    setInterval(chkVer, 5 * 60 * 1000); setTimeout(chkVer, 4000);
     navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(function (reg) {
       var chk = function () { try { reg.update(); } catch (e) {} };
       document.addEventListener('visibilitychange', function () { if (!document.hidden) chk(); });
